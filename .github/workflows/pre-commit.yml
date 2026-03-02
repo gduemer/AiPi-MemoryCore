@@ -38,11 +38,29 @@ jobs:
             const prBranch = context.payload.pull_request.head.ref;
             const prAuthor = context.payload.pull_request.user.login;
 
-            const issueTitle = `[Pre-commit Failure] PR #${prNumber} — ${prTitle}`;
-            const { data: existingIssues } = await github.rest.issues.listForRepo({
-              owner, repo, state: 'open',
-            });
-            const duplicate = existingIssues.find(i => i.title === issueTitle && !i.pull_request);
+            // GitHub issue titles are limited to 256 characters.
+            const MAX_TITLE_LENGTH = 256;
+            const titlePrefix = `[Pre-commit Failure] PR #${prNumber} — `;
+            const remainingLength = MAX_TITLE_LENGTH - titlePrefix.length;
+            let safePrTitle = prTitle;
+            if (remainingLength > 0 && prTitle.length > remainingLength) {
+              // Leave room for an ellipsis to indicate truncation.
+              safePrTitle = prTitle.slice(0, Math.max(0, remainingLength - 1)) + '…';
+            }
+            const issueTitle = `${titlePrefix}${safePrTitle}`;
+
+            // Paginate through all open issues to avoid missing existing tracking issues.
+            let duplicate = null;
+            for await (const response of github.paginate.iterator(
+              github.rest.issues.listForRepo,
+              { owner, repo, state: 'open', per_page: 100 }
+            )) {
+              const found = response.data.find(i => i.title === issueTitle && !i.pull_request);
+              if (found) {
+                duplicate = found;
+                break;
+              }
+            }
             if (!duplicate) {
               const issueBody = [
                 `## Pre-commit Failure on PR #${prNumber}`,
