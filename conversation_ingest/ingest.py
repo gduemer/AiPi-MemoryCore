@@ -3,7 +3,6 @@ Phase 1: Conversation Ingest
 Parses exported ChatGPT/Claude/Perplexity conversation JSON.
 Extracts: decisions, promises, deadlines, projects, emotions, tech, open loops.
 """
-
 import json
 import uuid
 from pathlib import Path
@@ -105,8 +104,8 @@ def extract_signal(text: str, conversation_id: str, timestamp: str) -> dict[str,
 
 
 def ingest_chatgpt_export(export_path: Path) -> list[dict]:
-    with open(export_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    with open(export_path, "r", encoding="utf-8") as fp:
+        data = json.load(fp)
     results = []
     for convo in data:
         cid = convo.get("id", str(uuid.uuid4()))
@@ -130,8 +129,8 @@ def run_ingest(export_path: str):
     path = Path(export_path)
     results = ingest_chatgpt_export(path)
     out_file = OUT_DIR / f"{path.stem}_extracted.json"
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+    with open(out_file, "w", encoding="utf-8") as fp:
+        json.dump(results, fp, indent=2)
     print(f"[ingest] {len(results)} conversations extracted -> {out_file}")
     return results
 
