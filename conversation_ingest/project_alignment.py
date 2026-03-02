@@ -2,6 +2,7 @@
 Phase 4: Project Alignment - map pods to existing or new projects
 Creates Project records and associates Pods with them.
 """
+
 import json
 import sys
 import os
@@ -14,7 +15,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memory_core.models import (
     Pod,
     Project,
-    get_engine,
     get_session,
     init_db,
 )
@@ -94,9 +94,7 @@ def align_pods_to_projects():
                 # Update existing pod
                 existing_pod.label = category
                 existing_pod.project_id = project.id
-                existing_pod.core_technologies = pod_data.get(
-                    "core_technologies", []
-                )
+                existing_pod.core_technologies = pod_data.get("core_technologies", [])
                 existing_pod.emotional_driver = pod_data.get("emotional_driver")
             else:
                 # Create new pod
@@ -117,7 +115,9 @@ def align_pods_to_projects():
         # Print summary
         total_projects = session.query(Project).count()
         total_pods = session.query(Pod).count()
-        print(f"[align] Database now has {total_projects} projects and {total_pods} pods")
+        print(
+            f"[align] Database now has {total_projects} projects and {total_pods} pods"
+        )
 
     finally:
         session.close()
