@@ -79,9 +79,18 @@ jobs:
                   owner, repo,
                   title: issueTitle,
                   body: issueBody,
-                  assignees: [prAuthor],
                 });
                 core.info(`Tracking issue created: ${newIssue.html_url}`);
+                try {
+                  await github.rest.issues.addAssignees({
+                    owner,
+                    repo,
+                    issue_number: newIssue.number,
+                    assignees: [prAuthor],
+                  });
+                } catch (assignErr) {
+                  core.warning(`Could not assign tracking issue to ${prAuthor}: ${assignErr.message}`);
+                }
               } catch (issueErr) {
                 core.warning(`Could not create tracking issue: ${issueErr.message}`);
               }

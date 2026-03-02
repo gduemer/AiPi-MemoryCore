@@ -121,10 +121,19 @@ jobs:
             const prBranch = context.payload.pull_request.head.ref;
             const prAuthor = context.payload.pull_request.user.login;
 
-            const issueTitle = `[AI Review Failure] PR #${prNumber} — ${prTitle}`;
-            const { data: existingIssues } = await github.rest.issues.listForRepo({
-              owner, repo, state: 'open',
-            });
+            const MAX_TITLE_LENGTH = 256;
+            const baseTitlePrefix = `[AI Review Failure] PR #${prNumber} — `;
+            const maxPrTitleLength = Math.max(0, MAX_TITLE_LENGTH - baseTitlePrefix.length);
+            let truncatedPrTitle = prTitle;
+            if (truncatedPrTitle.length > maxPrTitleLength && maxPrTitleLength > 0) {
+              truncatedPrTitle = truncatedPrTitle.slice(0, Math.max(0, maxPrTitleLength - 1)) + '…';
+            }
+            const issueTitle = `${baseTitlePrefix}${truncatedPrTitle}`;
+
+            const existingIssues = await github.paginate(
+              github.rest.issues.listForRepo,
+              { owner, repo, state: 'open', per_page: 100 }
+            );
             const duplicate = existingIssues.find(i => i.title === issueTitle && !i.pull_request);
             if (!duplicate) {
               const issueBody = [
@@ -144,9 +153,18 @@ jobs:
                   owner, repo,
                   title: issueTitle,
                   body: issueBody,
-                  assignees: [prAuthor],
                 });
                 core.info(`Tracking issue created: ${newIssue.html_url}`);
+                try {
+                  await github.rest.issues.addAssignees({
+                    owner,
+                    repo,
+                    issue_number: newIssue.number,
+                    assignees: [prAuthor],
+                  });
+                } catch (assignErr) {
+                  core.warning(`Could not assign PR author to tracking issue: ${assignErr.message}`);
+                }
               } catch (issueErr) {
                 core.warning(`Could not create tracking issue: ${issueErr.message}`);
               }

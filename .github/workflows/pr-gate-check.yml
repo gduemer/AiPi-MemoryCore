@@ -78,11 +78,30 @@ jobs:
               }
 
               // ── Open a tracking Issue (deduplicated by title) ────────────
-              const issueTitle = `[Gate Failure] PR #${prNumber} — ${prTitle}`;
-              const { data: existingIssues } = await github.rest.issues.listForRepo({
-                owner: context.repo.owner, repo: context.repo.repo,
-                state: 'open',
-              });
+              const issueTitlePrefix = `[Gate Failure] PR #${prNumber} — `;
+              const MAX_ISSUE_TITLE_LENGTH = 256;
+              const maxPrTitleLength = Math.max(0, MAX_ISSUE_TITLE_LENGTH - issueTitlePrefix.length);
+              let safePrTitle = prTitle;
+              if (safePrTitle.length > maxPrTitleLength && maxPrTitleLength > 0) {
+                safePrTitle = safePrTitle.slice(0, maxPrTitleLength - 1) + '…';
+              }
+              const issueTitle = issueTitlePrefix + safePrTitle;
+
+              let existingIssues = [];
+              let page = 1;
+              while (true) {
+                const { data: pageIssues } = await github.rest.issues.listForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  per_page: 100,
+                  page,
+                });
+                if (!pageIssues || pageIssues.length === 0) break;
+                existingIssues = existingIssues.concat(pageIssues);
+                if (pageIssues.length < 100) break;
+                page += 1;
+              }
               const duplicate = existingIssues.find(i => i.title === issueTitle && !i.pull_request);
               if (!duplicate) {
                 const issueBody = [
@@ -105,9 +124,19 @@ jobs:
                     owner: context.repo.owner, repo: context.repo.repo,
                     title: issueTitle,
                     body: issueBody,
-                    assignees: [prAuthor],
                   });
                   core.info(`Tracking issue created: ${newIssue.html_url}`);
+                  // Best-effort: try to assign the PR author after issue creation.
+                  try {
+                    await github.rest.issues.addAssignees({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: newIssue.number,
+                      assignees: [prAuthor],
+                    });
+                  } catch (assignErr) {
+                    core.warning(`Could not assign PR author to tracking issue: ${assignErr.message}`);
+                  }
                 } catch (issueErr) {
                   core.warning(`Could not create tracking issue: ${issueErr.message}`);
                 }
