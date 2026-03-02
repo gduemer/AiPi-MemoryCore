@@ -234,11 +234,28 @@ jobs:
               }
 
               // ── Open a tracking Issue (deduplicated by title) ────────────
-              const issueTitle = `[CI Failure] PR #${prNumber} — ${prTitle}`;
-              const { data: existingIssues } = await github.rest.issues.listForRepo({
-                owner, repo, state: 'open', labels: 'ci-failure',
+              const MAX_ISSUE_TITLE_LENGTH = 256;
+              const issueTitlePrefix = `[CI Failure] PR #${prNumber} — `;
+              const remainingTitleLength = MAX_ISSUE_TITLE_LENGTH - issueTitlePrefix.length;
+              let truncatedPrTitle = prTitle;
+              if (remainingTitleLength > 0 && truncatedPrTitle.length > remainingTitleLength) {
+                truncatedPrTitle = truncatedPrTitle.slice(0, remainingTitleLength - 1) + '…';
+              }
+              const issueTitle = issueTitlePrefix + truncatedPrTitle;
+
+              // Use Search API to find an existing open ci-failure issue with the exact same title.
+              const searchQuery = [
+                `repo:${owner}/${repo}`,
+                'type:issue',
+                'state:open',
+                'label:ci-failure',
+                `in:title "${issueTitle.replace(/"/g, '\\"')}"`
+              ].join(' ');
+              const { data: searchResults } = await github.rest.search.issuesAndPullRequests({
+                q: searchQuery,
+                per_page: 50,
               });
-              const duplicate = existingIssues.find(i => i.title === issueTitle && !i.pull_request);
+              const duplicate = searchResults.items.find(i => i.title === issueTitle && !i.pull_request);
               if (!duplicate) {
                 const failedJobs = [
                   !lintOk ? '- ❌ **Lint** (ruff + black)' : null,
