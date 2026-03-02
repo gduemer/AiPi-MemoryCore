@@ -1,0 +1,298 @@
+name: Auto-Fix CI Failures
+
+# Trigger on CI workflow completion (after lint/test runs)
+on:
+  workflow_run:
+    workflows: ["CI — Build, Lint, Test"]
+    types:
+      - completed
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  auto-fix-on-failure:
+    # Only run if CI failed and this is a PR
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = github.event.workflow_run.pull_requests[0]?.number;
+            if (!prNumber) {
+              core.setFailed('No PR found for this workflow run');
+              return;
+            }
+            
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            
+            // Get recursion depth from PR branch name or labels
+            const depth = pr.head.ref.match(/auto-fix-depth-(\d+)/) ? 
+              parseInt(RegExp.$1) : 0;
+            
+            core.setOutput('pr_number', prNumber);
+            core.setOutput('pr_title', pr.title);
+            core.setOutput('pr_branch', pr.head.ref);
+            core.setOutput('base_branch', pr.base.ref);
+            core.setOutput('depth', depth);
+            
+            return { prNumber, depth };
+
+      - name: Check recursion depth
+        id: check_depth
+        run: |
+          DEPTH=${{ steps.pr.outputs.depth }}
+          echo "Current depth: $DEPTH"
+          
+          if [ "$DEPTH" -ge 3 ]; then
+            echo "reached_max_depth=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Maximum recursion depth (3) reached. Manual intervention required."
+          else
+            echo "reached_max_depth=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout PR branch
+        if: steps.check_depth.outputs.reached_max_depth == 'false'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.pr_branch }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        if: steps.check_depth.outputs.reached_max_depth == 'false'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install linters
+        if: steps.check_depth.outputs.reached_max_depth == 'false'
+        run: |
+          pip install ruff black
+
+      - name: Download failed job logs
+        id: logs
+        if: steps.check_depth.outputs.reached_max_depth == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: github.event.workflow_run.id
+            });
+            
+            const failedJobs = jobs.data.jobs.filter(j => j.conclusion === 'failure');
+            const lintJob = failedJobs.find(j => j.name.includes('Lint'));
+            
+            if (!lintJob) {
+              core.info('No lint failures found');
+              return { files: [], checkName: 'unknown' };
+            }
+            
+            // Parse log to find failing files
+            const logUrl = lintJob.url;
+            const log = lintJob.steps.find(s => s.name.includes('ruff') || s.name.includes('black'));
+            
+            // Extract files from job name or use heuristic
+            const checkName = lintJob.name.includes('black') ? 'black' : 'ruff';
+            
+            core.setOutput('check_name', checkName);
+            core.setOutput('job_name', lintJob.name);
+            
+            return { checkName, jobName: lintJob.name };
+
+      - name: Run black auto-format on all Python files
+        id: black_fix
+        if: >-
+          steps.check_depth.outputs.reached_max_depth == 'false' &&
+          steps.logs.outputs.check_name == 'black'
+        run: |
+          echo "🔧 Running black auto-format..."
+          black . --exclude '/(\.)'
+          
+          # Check if anything changed
+          if git diff --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No formatting changes needed"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            git diff --name-only > changed_files.txt
+            echo "Files formatted:"
+            cat changed_files.txt
+          fi
+
+      - name: Run ruff auto-fix
+        id: ruff_fix
+        if: >-
+          steps.check_depth.outputs.reached_max_depth == 'false' &&
+          steps.logs.outputs.check_name == 'ruff'
+        run: |
+          echo "🔧 Running ruff auto-fix..."
+          ruff check . --fix --unsafe-fixes
+          
+          if git diff --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            git diff --name-only > changed_files.txt
+          fi
+
+      - name: Commit and push fixes
+        id: commit
+        if: >-
+          steps.check_depth.outputs.reached_max_depth == 'false' &&
+          (steps.black_fix.outputs.changed == 'true' || steps.ruff_fix.outputs.changed == 'true')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          DEPTH=${{ steps.pr.outputs.depth }}
+          CHECK_NAME=${{ steps.logs.outputs.check_name }}
+          
+          git add -A
+          git commit -m "fix(auto): apply $CHECK_NAME formatting fixes [depth: $DEPTH]
+          
+          Auto-fixed by CI workflow after $CHECK_NAME check failure.
+          Parent PR: #${{ steps.pr.outputs.pr_number }}
+          Recursion depth: $DEPTH/3"
+          
+          git push origin ${{ steps.pr.outputs.pr_branch }}
+          
+          echo "pushed=true" >> $GITHUB_OUTPUT
+
+      - name: Create sub-PR if fixes failed
+        id: sub_pr
+        if: >-
+          steps.check_depth.outputs.reached_max_depth == 'false' &&
+          steps.commit.outputs.pushed != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const depth = parseInt('${{ steps.pr.outputs.depth }}');
+            const newDepth = depth + 1;
+            const parentPR = '${{ steps.pr.outputs.pr_number }}';
+            const checkName = '${{ steps.logs.outputs.check_name }}';
+            
+            // Create a new branch for sub-PR
+            const baseBranch = '${{ steps.pr.outputs.pr_branch }}';
+            const subBranch = `auto-fix-depth-${newDepth}/pr-${parentPR}/${checkName}`;
+            
+            // Create branch
+            const baseRef = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `heads/${baseBranch}`
+            });
+            
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/heads/${subBranch}`,
+              sha: baseRef.data.object.sha
+            });
+            
+            // Create sub-PR
+            const title = `[${{ steps.pr.outputs.pr_title }}] Auto-fix: ${checkName} check [depth ${newDepth}/3]`;
+            const body = `## 🤖 Automated Fix PR\n\n` +
+              `**Parent PR:** #${parentPR}\n` +
+              `**Failed Check:** \`${checkName}\`\n` +
+              `**Recursion Depth:** ${newDepth}/3\n\n` +
+              `---\n\n` +
+              `This PR was automatically created to fix \`${checkName}\` failures in the parent PR.\n\n` +
+              `The workflow will attempt to apply automatic fixes and commit them back to this branch.` +
+              `\n\nIf this PR also fails, the workflow will create another sub-PR (up to depth 3).`;
+            
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              head: subBranch,
+              base: baseBranch
+            });
+            
+            // Add labels
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['auto-fix', `depth-${newDepth}`, `parent-pr-${parentPR}`]
+            });
+            
+            core.info(`✅ Created sub-PR #${pr.number}`);
+            return pr.number;
+
+      - name: Create issue at max depth
+        if: steps.check_depth.outputs.reached_max_depth == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const parentPR = '${{ steps.pr.outputs.pr_number }}';
+            const checkName = '${{ steps.logs.outputs.check_name }}';
+            
+            const title = `[${{ steps.pr.outputs.pr_title }}] Manual fix required: ${checkName} check`;
+            const body = `## ⚠️ Maximum Auto-Fix Depth Reached\n\n` +
+              `**Parent PR:** #${parentPR}\n` +
+              `**Failed Check:** \`${checkName}\`\n` +
+              `**Recursion Depth:** 3/3 (maximum)\n\n` +
+              `---\n\n` +
+              `The automatic fix workflow has reached the maximum recursion depth (3 levels).\n` +
+              `**Manual intervention is required** to resolve the remaining \`${checkName}\` failures.\n\n` +
+              `### Next Steps:\n` +
+              `1. Review the failing checks in the CI logs\n` +
+              `2. Manually fix the issues locally\n` +
+              `3. Push the fixes to the PR branch\n\n` +
+              `### Failed Files:\n` +
+              `Check the workflow logs for specific file errors.`;
+            
+            const { data: issue } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['manual-fix-required', 'ci-failure', `parent-pr-${parentPR}`]
+            });
+            
+            // Comment on parent PR
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: parentPR,
+              body: `⚠️ **Auto-fix workflow reached maximum depth.**\n\nCreated issue #${issue.number} for manual intervention.`
+            });
+            
+            core.info(`✅ Created issue #${issue.number}`);
+
+      - name: Comment on PR with fix status
+        if: >-
+          steps.check_depth.outputs.reached_max_depth == 'false' &&
+          steps.commit.outputs.pushed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const checkName = '${{ steps.logs.outputs.check_name }}';
+            const prNumber = '${{ steps.pr.outputs.pr_number }}';
+            const depth = '${{ steps.pr.outputs.depth }}';
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `✅ **Auto-fix applied** [depth ${depth}/3]\n\n` +
+                `Applied automatic \`${checkName}\` fixes and pushed to this PR.\n` +
+                `The CI workflow will re-run to verify the fixes.`
+            });
