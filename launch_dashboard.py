@@ -29,7 +29,6 @@ def get_screen_size():
     """Get screen dimensions (Windows)."""
     try:
         import ctypes
-
         user32 = ctypes.windll.user32
         return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
     except Exception:
@@ -67,19 +66,19 @@ def open_centered_browser():
                         "--new-window",
                     ]
                 )
-                print(f"Opened Chrome app window at ({x}, {y})")
+                print(f"✅ Opened Chrome app window at ({x}, {y})")
                 return
             except Exception as e:
-                print(f"Chrome app mode failed: {e}")
+                print(f"⚠️ Chrome app mode failed: {e}")
 
     # Fallback: default browser (won't be centered)
-    print("Chrome not found, opening default browser...")
+    print("⚠️ Chrome not found, opening default browser...")
     webbrowser.open(URL)
 
 
 def launch_server():
     """Start uvicorn server in background."""
-    print(f"Starting AiPi-MemoryCore dashboard server on {HOST}:{PORT}...")
+    print(f"🚀 Starting AiPi-MemoryCore dashboard server on {HOST}:{PORT}...")
 
     # Change to repo root
     repo_root = Path(__file__).parent
@@ -101,7 +100,7 @@ def launch_server():
     )
 
     # Wait for server to be ready
-    print("Waiting for server to start...")
+    print("⏳ Waiting for server to start...")
     time.sleep(3)
     return server
 
@@ -124,22 +123,22 @@ def main():
         # Open centered browser window
         open_centered_browser()
 
-        print(f"\nDashboard running at {URL}")
-        print("\nPress Ctrl+C to stop the server")
+        print(f"\n✅ Dashboard running at {URL}")
+        print("\n🛡️ Press Ctrl+C to stop the server")
         print("-" * 60)
 
         # Keep server running
         server.wait()
 
     except KeyboardInterrupt:
-        print("\n\nShutting down server...")
+        print("\n\n🛑 Shutting down server...")
         if server is not None:
             server.terminate()
             server.wait()
-        print("Server stopped.")
+        print("✅ Server stopped.")
 
     except Exception as e:
-        print(f"\nError: {e}")
+        print(f"\n❌ Error: {e}")
         sys.exit(1)
 
 
