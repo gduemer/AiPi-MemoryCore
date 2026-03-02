@@ -1,0 +1,87 @@
+name: PR Gate Check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  gate-check:
+    name: Validate PR template sections
+    runs-on: ubuntu-latest
+    if: github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required sections
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const prNumber = context.payload.pull_request.number;
+            const prTitle  = context.payload.pull_request.title;
+            const prBranch = context.payload.pull_request.head.ref;
+            const prAuthor = context.payload.pull_request.user.login;
+
+            const required = [
+              { name: 'Intent', pattern: /^##\s*Intent/im },
+              { name: 'Changes', pattern: /^##\s*Changes/im },
+              { name: 'Tests', pattern: /^##\s*Tests/im },
+            ];
+
+            const results = required.map(s => ({ ...s, pass: s.pattern.test(body) }));
+            const failing = results.filter(r => !r.pass);
+            const allPass = failing.length === 0;
+
+            if (allPass) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: prNumber,
+                body: '## ✅ Gate check: PASS\n\nAll required sections present.',
+              });
+            } else {
+              // Create sub-PR for fixing PR description
+              const fixBranch = `fix/pr-gate-${prNumber}-${context.payload.pull_request.head.sha.slice(0,7)}`;
+              try {
+                await github.rest.git.createRef({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  ref:   `refs/heads/${fixBranch}`,
+                  sha:   context.payload.pull_request.head.sha,
+                });
+              } catch (e) {
+                if (e.status !== 422) throw e;
+              }
+
+              const { data: openPRs } = await github.rest.pulls.list({
+                owner: context.repo.owner, repo: context.repo.repo,
+                state: 'open', head: `${context.repo.owner}:${fixBranch}`,
+              });
+
+              let subPrUrl = '';
+              if (openPRs.length === 0) {
+                const { data: subPr } = await github.rest.pulls.create({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  title: `[Gate Fix] PR #${prNumber} — ${prTitle}`,
+                  head:  fixBranch,
+                  base:  prBranch,
+                  body:  `## PR Gate Failure Fix\n\n**Parent PR:** #${prNumber}\n\n**Missing sections:**\n${failing.map(f => `- ${f.name}`).join('\\n')}\n\nUpdate the PR description on the parent branch to include these sections.`,
+                });
+                subPrUrl = subPr.html_url;
+              } else {
+                subPrUrl = openPRs[0].html_url;
+              }
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: prNumber,
+                body: `## ❌ Gate check: FAIL\n\n**Missing sections:**\n${failing.map(f => `- ${f.name}`).join('\\n')}\n\n**Sub-PR opened:** ${subPrUrl}`,
+              });
+              core.setFailed('Gate check failed — sub-PR opened.');
+            }
