@@ -283,9 +283,18 @@ jobs:
                     title: issueTitle,
                     body: issueBody,
                     labels: ['ci-failure'],
-                    assignees: [prAuthor],
                   });
                   core.info(`Tracking issue created: ${newIssue.html_url}`);
+                  try {
+                    await github.rest.issues.addAssignees({
+                      owner,
+                      repo,
+                      issue_number: newIssue.number,
+                      assignees: [prAuthor],
+                    });
+                  } catch (assignErr) {
+                    core.warning(`Tracking issue created but could not assign author ${prAuthor}: ${assignErr.message}`);
+                  }
                 } catch (issueErr) {
                   core.warning(`Could not create tracking issue: ${issueErr.message}`);
                 }
