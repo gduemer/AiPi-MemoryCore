@@ -40,9 +40,8 @@ def generate_embeddings(records: list[dict]) -> np.ndarray:
     print(f"[cluster] Embedding {len(texts)} conversations...")
     embeddings = model.encode(texts, show_progress_bar=True, batch_size=32)
     np.save(EMBED_DIR / "embeddings.npy", embeddings)
-        print("[cluster] Embeddings saved.")
+    print("[cluster] Embeddings saved.")
     return embeddings
-
 def cluster_embeddings(embeddings: np.ndarray, records: list[dict]) -> list[dict]:
     clusterer = hdbscan.HDBSCAN(min_cluster_size=3, min_samples=2, metric="euclidean")
     labels    = clusterer.fit_predict(embeddings)
