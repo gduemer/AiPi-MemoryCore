@@ -17,12 +17,13 @@ from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT = 8000
-URL  = f"http://{HOST}:{PORT}/docs"
+URL = f"http://{HOST}:{PORT}/docs"
 
-WINDOW_WIDTH  = 1400
+WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 
 # ────────────────────────────────────────────────────────────────
+
 
 def get_screen_size():
     """Get screen dimensions (Windows)."""
@@ -45,82 +46,100 @@ def center_window_geometry():
 def open_centered_browser():
     """Open browser with centered window (Chrome/Edge with app mode)."""
     x, y = center_window_geometry()
-    
+
     # Try Chrome app mode first (cleanest UI)
     chrome_paths = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
     ]
-    
+
     for chrome_path in chrome_paths:
         if Path(chrome_path).exists():
             try:
-                subprocess.Popen([
-                    chrome_path,
-                    f"--app={URL}",
-                    f"--window-size={WINDOW_WIDTH},{WINDOW_HEIGHT}",
-                    f"--window-position={x},{y}",
-                    "--new-window",
-                ])
-                    print(f"Opened Chrome app window at ({x}, {y})")                return
+                subprocess.Popen(
+                    [
+                        chrome_path,
+                        f"--app={URL}",
+                        f"--window-size={WINDOW_WIDTH},{WINDOW_HEIGHT}",
+                        f"--window-position={x},{y}",
+                        "--new-window",
+                    ]
+                )
+                print(f"✅ Opened Chrome app window at ({x}, {y})")
+                return
             except Exception as e:
-                    print(f"Chrome app mode failed: {e}")    
+                print(f"⚠️ Chrome app mode failed: {e}")
+
     # Fallback: default browser (won't be centered)
-    print("Chrome not found, opening default browser...")    webbrowser.open(URL)
+    print("⚠️ Chrome not found, opening default browser...")
+    webbrowser.open(URL)
 
 
 def launch_server():
     """Start uvicorn server in background."""
-    print(f"Starting AiPi-MemoryCore dashboard server on {HOST}:{PORT}...")    
+    print(f"🚀 Starting AiPi-MemoryCore dashboard server on {HOST}:{PORT}...")
+
     # Change to repo root
     repo_root = Path(__file__).parent
     os.chdir(repo_root)
-    
-    # Start uvicorn
+
+    # Start uvicorn (inherit stdout/stderr so pipe buffers can't block uvicorn)
     server = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "dashboard.app:app",
-         "--host", HOST, "--port", str(PORT), "--reload"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "dashboard.app:app",
+            "--host",
+            HOST,
+            "--port",
+            str(PORT),
+            "--reload",
+        ],
     )
-    
+
     # Wait for server to be ready
-    print("Waiting for server to start...")    time.sleep(3)
-    
+    print("⏳ Waiting for server to start...")
+    time.sleep(3)
     return server
 
 
 def main():
-    print("""
+    print(
+        """
 ╭────────────────────────────────────────────────────────────╮
-│  AiPi-MemoryCore Dashboard Launcher                      │
-│  Phase 1-5 memory architecture                          │
+│  AiPi-MemoryCore Dashboard Launcher                        │
+│  Phase 1-5 memory architecture                             │
 ╰────────────────────────────────────────────────────────────╯
-    """)
-    
+"""
+    )
+
+    server = None
     try:
         # Launch FastAPI server
         server = launch_server()
-        
+
         # Open centered browser window
         open_centered_browser()
-        
-        print(f"""                Dashboard running at {URL}
-        """)        print("
-        print("Press Ctrl+C to stop the server")        
+
+        print(f"\n✅ Dashboard running at {URL}")
+        print("\n🛡️ Press Ctrl+C to stop the server")
+        print("-" * 60)
+
         # Keep server running
         server.wait()
-        
-    except KeyboardInterrupt:
-        print("
 
-        print("Shutting down server...")        server.terminate()
-        server.wait()
-        print("Server stopped.")    except Exception as e:
-        print(f"
-        print(f"Error: {e}")        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n\n🛑 Shutting down server...")
+        if server is not None:
+            server.terminate()
+            server.wait()
+        print("✅ Server stopped.")
+
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
