@@ -17,17 +17,19 @@ from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT = 8000
-URL  = f"http://{HOST}:{PORT}/docs"
+URL = f"http://{HOST}:{PORT}/docs"
 
-WINDOW_WIDTH  = 1400
+WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 
 # ────────────────────────────────────────────────────────────────
+
 
 def get_screen_size():
     """Get screen dimensions (Windows)."""
     try:
         import ctypes
+
         user32 = ctypes.windll.user32
         return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
     except Exception:
@@ -45,29 +47,31 @@ def center_window_geometry():
 def open_centered_browser():
     """Open browser with centered window (Chrome/Edge with app mode)."""
     x, y = center_window_geometry()
-    
+
     # Try Chrome app mode first (cleanest UI)
     chrome_paths = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
     ]
-    
+
     for chrome_path in chrome_paths:
         if Path(chrome_path).exists():
             try:
-                subprocess.Popen([
-                    chrome_path,
-                    f"--app={URL}",
-                    f"--window-size={WINDOW_WIDTH},{WINDOW_HEIGHT}",
-                    f"--window-position={x},{y}",
-                    "--new-window",
-                ])
+                subprocess.Popen(
+                    [
+                        chrome_path,
+                        f"--app={URL}",
+                        f"--window-size={WINDOW_WIDTH},{WINDOW_HEIGHT}",
+                        f"--window-position={x},{y}",
+                        "--new-window",
+                    ]
+                )
                 print(f"✅ Opened Chrome app window at ({x}, {y})")
                 return
             except Exception as e:
                 print(f"⚠️  Chrome app mode failed: {e}")
-    
+
     # Fallback: default browser (won't be centered)
     print("⚠️  Chrome not found, opening default browser...")
     webbrowser.open(URL)
@@ -76,24 +80,33 @@ def open_centered_browser():
 def launch_server():
     """Start uvicorn server in background."""
     print(f"🚀 Starting AiPi-MemoryCore dashboard server on {HOST}:{PORT}...")
-    
+
     # Change to repo root
     repo_root = Path(__file__).parent
     os.chdir(repo_root)
-    
+
     # Start uvicorn
     server = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "dashboard.app:app",
-         "--host", HOST, "--port", str(PORT), "--reload"],
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "dashboard.app:app",
+            "--host",
+            HOST,
+            "--port",
+            str(PORT),
+            "--reload",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    
+
     # Wait for server to be ready
     print("⏳ Waiting for server to start...")
     time.sleep(3)
-    
+
     return server
 
 
@@ -104,33 +117,28 @@ def main():
 │  Phase 1-5 memory architecture                          │
 ╰────────────────────────────────────────────────────────────╯
     """)
-    
+
     try:
         # Launch FastAPI server
         server = launch_server()
-        
+
         # Open centered browser window
         open_centered_browser()
-        
-        print(f"
-✅ Dashboard running at {URL}")
-        print("
-🛡️  Press Ctrl+C to stop the server")
+
+        print(f"\n✅ Dashboard running at {URL}")
+        print("\n🛡️  Press Ctrl+C to stop the server")
         print("─" * 60)
-        
+
         # Keep server running
         server.wait()
-        
-    except KeyboardInterrupt:
-        print("
 
-🛑 Shutting down server...")
+    except KeyboardInterrupt:
+        print("\n\n🛑 Shutting down server...")
         server.terminate()
         server.wait()
         print("✅ Server stopped.")
     except Exception as e:
-        print(f"
-❌ Error: {e}")
+        print(f"\n❌ Error: {e}")
         sys.exit(1)
 
 
