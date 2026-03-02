@@ -2,9 +2,11 @@
 dashboard/app.py - Phase 5: FastAPI Dashboard for AiPi-MemoryCore
 Metrics API for Chart.js / ECharts / D3 frontend.
 """
-import sys, os, subprocess, json
+import sys
+import os
+import subprocess
+import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from fastapi import FastAPI, UploadFile, File, HTMLResponse
 from sqlalchemy import func
 from memory_core.models import (
@@ -265,12 +267,12 @@ async def metrics_summary():
     """Gauge data: open loops, decisions, fragmentation index, completion ratio."""
     s = get_session(engine)
     try:
-        total_convos    = s.query(func.count(Conversation.id)).scalar() or 0
-        open_loops      = s.query(func.count(OpenLoop.id)).filter(OpenLoop.is_closed == False).scalar() or 0
-        total_decisions = s.query(func.count(Decision.id)).scalar() or 0
-        exec_decisions  = s.query(func.count(Decision.id)).filter(Decision.is_executed == True).scalar() or 0
-        active_projects = s.query(func.count(Project.id)).filter(Project.status == "active").scalar() or 0
-        stale_count     = s.query(func.count(Conversation.id)).filter(Conversation.is_stale == True).scalar() or 0
+    total_convos     = s.query(func.count(Conversation.id)).scalar() or 0
+        open_loops       = s.query(func.count(OpenLoop.id)).filter(~OpenLoop.is_closed).scalar() or 0
+    total_decisions  = s.query(func.count(Decision.id)).scalar() or 0
+    active_projects  = s.query(func.count(Project.id)).filter(Project.status == "active").scalar() or 0
+    exec_decisions   = s.query(func.count(Decision.id)).filter(Decision.is_executed).scalar() or 0
+    stale_count      = s.query(func.count(Conversation.id)).filter(Conversation.is_stale).scalar() or 0        stale_count     = s.query(func.count(Conversation.id)).filter(Conversation.is_stale == True).scalar() or 0
         pod_count       = s.query(func.count(Pod.id)).scalar() or 0
         completion      = round(exec_decisions / total_decisions, 3) if total_decisions else 0.0
         fragmentation   = round(pod_count / active_projects, 2)      if active_projects else float(pod_count)
@@ -294,10 +296,10 @@ async def get_open_loops(limit: int = 50):
     """Unfinished loop heatmap data."""
     s = get_session(engine)
     try:
-        rows = s.query(OpenLoop).filter(OpenLoop.is_closed == False)\
-                .order_by(OpenLoop.days_open.desc()).limit(limit).all()
-        return [{"id": r.id, "text": r.text, "days_open": r.days_open,
-                 "conversation_id": r.conversation_id} for r in rows]
+            rows = s.query(OpenLoop).filter(~OpenLoop.is_closed)\
+                                .order_by(OpenLoop.days_open.desc()).limit(limit).all()
+                    return [{"id": r.id, "text": r.text, "days_open": r.days_open,            
+        "conversation_id": r.conversation_id} for r in rows]
     finally:
         s.close()
 
