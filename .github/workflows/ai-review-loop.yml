@@ -1,0 +1,109 @@
+name: AI Review Loop (Post-Approval)
+# ────────────────────────────────────────────────────────────────────
+# Triggers ONLY when all required reviewers have approved.
+# Runs Copilot AI verification loop at least once to catch any
+# remaining issues after human review is complete.
+# ────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  MIN_APPROVALS: "2"
+
+jobs:
+  ai-verify:
+    name: AI verification loop (post-approval)
+    runs-on: ubuntu-latest
+    if: github.event.review.state == 'approved'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if all reviewers have approved
+        id: check-approvals
+        uses: actions/github-script@v7
+        env:
+          MIN_APPROVALS: ${{ env.MIN_APPROVALS }}
+        with:
+          script: |
+            const owner    = context.repo.owner;
+            const repo     = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+            const minApprovals = parseInt(process.env.MIN_APPROVALS, 10);
+
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner, repo, pull_number: prNumber,
+            });
+
+            // Count unique approvers (last review state wins per user)
+            const reviewers = {};
+            for (const r of reviews) {
+              reviewers[r.user.login] = r.state;
+            }
+            const approvals = Object.values(reviewers).filter(s => s === 'APPROVED').length;
+
+            core.info(`Approvals: ${approvals} / ${minApprovals} required`);
+
+            if (approvals < minApprovals) {
+              core.info('Not all reviewers have approved yet. Skipping AI loop.');
+              core.setOutput('ready', 'false');
+            } else {
+              core.info('All required approvals received. Running AI loop.');
+              core.setOutput('ready', 'true');
+            }
+
+      - name: Run Copilot AI verification loop
+        if: steps.check-approvals.outputs.ready == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner    = context.repo.owner;
+            const repo     = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+            const headSha  = context.payload.pull_request.head.sha;
+
+            // Collect changed .py files
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner, repo, pull_number: prNumber,
+            });
+            const pyFiles = files.filter(f => f.filename.endsWith('.py')).map(f => f.filename);
+
+            if (pyFiles.length === 0) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNumber,
+                body: '## 🤖 AI Review Loop (Post-Approval)\n\n_No Python files changed — skipping AI verification._',
+              });
+              return;
+            }
+
+            const fileList = pyFiles.map(f => `- \`${f}\``).join('\n');
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber,
+              body: [
+                '## 🤖 AI Review Loop — Post-Approval Verification',
+                '',
+                '**All required human reviewers have approved.**',
+                'Running **one final AI verification pass** to catch any remaining issues.',
+                '',
+                `**Files reviewed:**`,
+                fileList,
+                '',
+                '@github-copilot Please do a final alignment review of these files:',
+                '1. Verify no issues were introduced by reviewer-suggested changes.',
+                '2. Check that all code follows existing patterns in the file and codebase.',
+                '3. Identify any latent issues or improvement opportunities.',
+                '4. Suggest the smallest change that improves clarity, correctness, or maintainability.',
+                '',
+                '> If everything looks good, reply **"LGTM - no issues found"** and the PR is ready to merge.',
+              ].join('\n'),
+            });
+
+            core.info('AI verification loop comment posted.');
