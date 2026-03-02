@@ -2,6 +2,7 @@
 Phase 3: Category Synthesis via clustering + simple rule-based labeling
 Names each pod cluster with a category label (cap at 12 categories max).
 """
+
 import json
 from pathlib import Path
 from collections import Counter
@@ -13,7 +14,14 @@ LABELED_FILE = EMBED_DIR / "pods_labeled.json"
 # Predefined category mapping (max 12 categories)
 CATEGORY_RULES = {
     "AI & ML Development": ["ollama", "embedding", "hdbscan", "llamacpp", "lm studio"],
-    "Backend Development": ["fastapi", "sqlalchemy", "postgres", "sqlite", ".net", "c#"],
+    "Backend Development": [
+        "fastapi",
+        "sqlalchemy",
+        "postgres",
+        "sqlite",
+        ".net",
+        "c#",
+    ],
     "Frontend Development": ["chart.js", "d3", "echarts"],
     "DevOps & Infrastructure": ["docker", "github actions", "wsl"],
     "Data & Analytics": ["sqlite", "postgres", "sqlalchemy"],
@@ -67,7 +75,7 @@ def synthesize_categories():
 
     # Count categories (cap at 12)
     category_counts = Counter(p["category"] for p in pods)
-    print(f"[category] Category distribution:")
+    print("[category] Category distribution:")
     for cat, count in category_counts.most_common(12):
         print(f"  {cat}: {count} pods")
 
