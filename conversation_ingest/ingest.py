@@ -33,14 +33,13 @@ def extract_signal(text: str, conversation_id: str, timestamp: str) -> dict[str,
     return {
         "conversation_id":  conversation_id,
         "timestamp":        timestamp,
-        "decisions":        [l.strip() for l in lines if any(m in l.lower() for m in DECISION_MARKERS)][:20],
-        "promises":         [l.strip() for l in lines if any(m in l.lower() for m in PROMISE_MARKERS)][:20],
-        "deadlines":        [l.strip() for l in lines if any(m in l.lower() for m in DEADLINE_MARKERS)][:10],
-        "projects_named":   list({p.upper() for p in KNOWN_PROJECTS if p in lower}),
+        "decisions":             [line.strip() for line in lines if any(m in line.lower() for m in DECISION_MARKERS)][:20],        "promises":         [l.strip() for l in lines if any(m in l.lower() for m in PROMISE_MARKERS)][:20],
+        "promises":             [line.strip() for line in lines if any(m in line.lower() for m in PROMISE_MARKERS)][:20],        "projects_named":   list({p.upper() for p in KNOWN_PROJECTS if p in lower}),
+                "deadlines":            [line.strip() for line in lines if any(m in line.lower() for m in DEADLINE_MARKERS)][:10],
+        "projects_named":        list({p.upper() for p in KNOWN_PROJECTS if p in lower}),
         "emotional_markers": [m for m in EMOTION_MARKERS if m in lower],
         "tech_stack":       list({t for t in TECH_KEYWORDS if t in lower}),
-        "open_loops":       [l.strip() for l in lines if any(m in l.lower() for m in LOOP_MARKERS)][:30],
-        "raw_char_count":   len(text),
+        "open_loops":           [line.strip() for line in lines if any(m in line.lower() for m in LOOP_MARKERS)][:30],        "raw_char_count":   len(text),
     }
 
 
