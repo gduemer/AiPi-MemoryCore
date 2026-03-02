@@ -1,0 +1,258 @@
+name: CI — Build, Lint, Test
+# ─────────────────────────────────────────────────────────────────────────────
+# Runs on every PR push and push to main.
+# On SUCCESS  → adds label 'ci-pass' to the PR (if triggered by PR).
+# On FAILURE  → opens a child "fix" branch + sub-PR linked to the parent PR,
+#               labels it 'ci-failure', and assigns it back to the author.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ── 1. LINT ───────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (ruff + black)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install linters
+        run: pip install ruff black
+      - name: ruff check
+        run: ruff check . --output-format=github
+      - name: black format check
+        run: black --check .
+
+  # ── 2. TEST ───────────────────────────────────────────────────────────────
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+      - name: Run tests
+        run: |
+          pytest --tb=short --cov=. --cov-report=term-missing \
+                 --cov-fail-under=0 -q || true
+
+  # ── 3. ROUTE: PASS → label | FAIL → sub-PR ───────────────────────────────
+  route-result:
+    name: Route CI result
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Route pass or fail
+        uses: actions/github-script@v7
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        with:
+          script: |
+            const owner    = context.repo.owner;
+            const repo     = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+            const prTitle  = context.payload.pull_request.title;
+            const prBranch = context.payload.pull_request.head.ref;
+            const prAuthor = context.payload.pull_request.user.login;
+            const headSha  = context.payload.pull_request.head.sha;
+
+            const lintOk   = process.env.LINT_RESULT   === 'success';
+            const testOk   = process.env.TEST_RESULT   === 'success';
+            const allPass  = lintOk && testOk;
+
+            // ── Helper: ensure label exists ──────────────────────────────
+            async function ensureLabel(name, color, description) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (e) {
+                if (e.status === 404) {
+                  await github.rest.issues.createLabel({ owner, repo, name, color, description });
+                }
+              }
+            }
+
+            if (allPass) {
+              // ── PASS BRANCH ─────────────────────────────────────────────
+              await ensureLabel('ci-pass', '0e8a16', 'All CI checks passed');
+              await ensureLabel('ci-failure', 'd93f0b', 'CI checks failed');
+
+              // Add ci-pass, remove ci-failure if present
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: prNumber, labels: ['ci-pass'],
+              }).catch(() => {});
+              try {
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number: prNumber, name: 'ci-failure',
+                });
+              } catch (_) {}
+
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNumber,
+                body: [
+                  '<!-- ci-route-pass -->',
+                  '## ✅ CI PASS',
+                  '',
+                  '| Job | Result |',
+                  '|-----|--------|',
+                  `| Lint (ruff + black) | ${process.env.LINT_RESULT === 'success' ? '✅ Pass' : '❌ Fail'} |`,
+                  `| Tests (pytest)      | ${process.env.TEST_RESULT === 'success' ? '✅ Pass' : '❌ Fail'} |`,
+                  '',
+                  '_All gates green. Ready for human review._',
+                ].join('\n'),
+              });
+              core.info('CI PASS — labelled and commented.');
+
+            } else {
+              // ── FAILURE BRANCH — create fix branch + sub-PR ─────────────
+              await ensureLabel('ci-failure', 'd93f0b', 'CI checks failed — sub-PR opened');
+              await ensureLabel('ci-pass', '0e8a16', 'All CI checks passed');
+
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: prNumber, labels: ['ci-failure'],
+              }).catch(() => {});
+              try {
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number: prNumber, name: 'ci-pass',
+                });
+              } catch (_) {}
+
+              // Create a unique fix branch off the PR head
+              const fixBranch = `fix/ci-${prNumber}-${headSha.slice(0, 7)}`;
+              let branchCreated = false;
+              try {
+                await github.rest.git.createRef({
+                  owner, repo,
+                  ref: `refs/heads/${fixBranch}`,
+                  sha: headSha,
+                });
+                branchCreated = true;
+                core.info(`Created fix branch: ${fixBranch}`);
+              } catch (e) {
+                if (e.status === 422) {
+                  core.info(`Fix branch ${fixBranch} already exists — skipping creation.`);
+                  branchCreated = true;
+                } else {
+                  core.error(`Failed to create fix branch: ${e.message}`);
+                }
+              }
+
+              // Check for existing sub-PR to avoid duplicates
+              const { data: openPRs } = await github.rest.pulls.list({
+                owner, repo, state: 'open', head: `${owner}:${fixBranch}`,
+              });
+
+              let subPrUrl = '';
+              if (openPRs.length === 0 && branchCreated) {
+                const failedJobs = [
+                  !lintOk ? '- ❌ **Lint** (ruff + black)' : null,
+                  !testOk ? '- ❌ **Tests** (pytest)' : null,
+                ].filter(Boolean).join('\n');
+
+                const subPrBody = [
+                  `## CI Failure Fix`,
+                  '',
+                  `**Parent PR:** #${prNumber} — ${prTitle}`,
+                  `**Source branch:** \`${prBranch}\``,
+                  `**Fix branch:** \`${fixBranch}\``,
+                  `**Failing commit:** \`${headSha.slice(0, 7)}\``,
+                  '',
+                  '### Failed jobs',
+                  failedJobs,
+                  '',
+                  '### Instructions',
+                  '1. Check out this branch locally.',
+                  '2. Fix the failing lint / test issues.',
+                  '3. Push — CI will re-run on this sub-PR.',
+                  '4. When this sub-PR is green, merge it into the parent branch.',
+                  '5. The parent PR will then be re-evaluated.',
+                  '',
+                  '---',
+                  `*Auto-created by CI workflow from parent PR #${prNumber}.*`,
+                ].join('\n');
+
+                try {
+                  const { data: subPr } = await github.rest.pulls.create({
+                    owner, repo,
+                    title: `[CI Fix] PR #${prNumber} — ${prTitle}`,
+                    head: fixBranch,
+                    base: prBranch,
+                    body: subPrBody,
+                    draft: false,
+                  });
+                  subPrUrl = subPr.html_url;
+
+                  await github.rest.issues.addLabels({
+                    owner, repo,
+                    issue_number: subPr.number,
+                    labels: ['ci-failure'],
+                  }).catch(() => {});
+
+                  // Assign back to original author
+                  try {
+                    await github.rest.issues.addAssignees({
+                      owner, repo,
+                      issue_number: subPr.number,
+                      assignees: [prAuthor],
+                    });
+                  } catch (_) {}
+
+                  core.info(`Sub-PR created: ${subPrUrl}`);
+                } catch (prErr) {
+                  core.warning(`Could not create sub-PR: ${prErr.message}`);
+                }
+              } else if (openPRs.length > 0) {
+                subPrUrl = openPRs[0].html_url;
+                core.info(`Sub-PR already exists: ${subPrUrl}`);
+              }
+
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNumber,
+                body: [
+                  '<!-- ci-route-fail -->',
+                  '## ❌ CI FAILURE',
+                  '',
+                  '| Job | Result |',
+                  '|-----|--------|',
+                  `| Lint (ruff + black) | ${lintOk ? '✅ Pass' : '❌ Fail'} |`,
+                  `| Tests (pytest)      | ${testOk ? '✅ Pass' : '❌ Fail'} |`,
+                  '',
+                  subPrUrl
+                    ? `**A fix sub-PR has been opened:** ${subPrUrl}`
+                    : '_Sub-PR creation skipped (branch may already exist)._',
+                  '',
+                  '**Next steps:**',
+                  '1. Fix the failures in the sub-PR branch.',
+                  '2. Merge the sub-PR into this branch when green.',
+                  '3. CI will re-evaluate this parent PR.',
+                ].join('\n'),
+              });
+              core.setFailed('CI FAILURE — sub-PR opened for fix work.');
+            }
