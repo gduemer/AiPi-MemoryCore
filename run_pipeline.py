@@ -10,6 +10,7 @@ Orchestrates all 5 phases of AiPi-MemoryCore:
 Usage:
   python run_pipeline.py <path/to/conversations.json>
 """
+
 import sys
 import subprocess
 from pathlib import Path
@@ -20,10 +21,10 @@ def run_phase(phase_name: str, script_path: str, *args):
     print(f"\n{'='*60}")
     print(f"  PHASE: {phase_name}")
     print(f"{'='*60}")
-    
+
     cmd = [sys.executable, script_path, *args]
     result = subprocess.run(cmd, capture_output=False, text=True)
-    
+
     if result.returncode != 0:
         print(f"\n❌ {phase_name} failed with exit code {result.returncode}")
         sys.exit(1)
@@ -47,35 +48,26 @@ def main():
         print(f"❌ File not found: {conversations_file}")
         sys.exit(1)
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("  AiPi-MemoryCore Full Pipeline")
-    print("="*60)
+    print("=" * 60)
     print(f"Input: {conversations_file}\n")
 
     # Phase 1: Event Extraction
     run_phase(
-        "Phase 1: Event Extraction",
-        "conversation_ingest/ingest.py",
-        conversations_file
+        "Phase 1: Event Extraction", "conversation_ingest/ingest.py", conversations_file
     )
 
-    # Phase 2: Pod Segmentation  
-    run_phase(
-        "Phase 2: Pod Segmentation",
-        "conversation_ingest/pod_cluster.py"
-    )
+    # Phase 2: Pod Segmentation
+    run_phase("Phase 2: Pod Segmentation", "conversation_ingest/pod_cluster.py")
 
     # Phase 3: Category Synthesis
     run_phase(
-        "Phase 3: Category Synthesis",
-        "conversation_ingest/category_synthesis.py"
+        "Phase 3: Category Synthesis", "conversation_ingest/category_synthesis.py"
     )
 
     # Phase 4: Project Alignment
-    run_phase(
-        "Phase 4: Project Alignment",
-        "conversation_ingest/project_alignment.py"
-    )
+    run_phase("Phase 4: Project Alignment", "conversation_ingest/project_alignment.py")
 
     # Phase 5 info
     print(f"\n{'='*60}")
