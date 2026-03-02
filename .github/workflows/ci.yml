@@ -233,6 +233,49 @@ jobs:
                 core.info(`Sub-PR already exists: ${subPrUrl}`);
               }
 
+              // ── Open a tracking Issue (deduplicated by title) ────────────
+              const issueTitle = `[CI Failure] PR #${prNumber} — ${prTitle}`;
+              const { data: existingIssues } = await github.rest.issues.listForRepo({
+                owner, repo, state: 'open', labels: 'ci-failure',
+              });
+              const duplicate = existingIssues.find(i => i.title === issueTitle && !i.pull_request);
+              if (!duplicate) {
+                const failedJobs = [
+                  !lintOk ? '- ❌ **Lint** (ruff + black)' : null,
+                  !testOk ? '- ❌ **Tests** (pytest)' : null,
+                ].filter(Boolean).join('\n');
+                const issueBody = [
+                  `## CI Failure on PR #${prNumber}`,
+                  '',
+                  `**PR:** [${prTitle}](https://github.com/${owner}/${repo}/pull/${prNumber})`,
+                  `**Branch:** \`${prBranch}\``,
+                  `**Failing commit:** \`${headSha.slice(0, 7)}\``,
+                  `**Workflow run:** https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+                  '',
+                  '### Failed jobs',
+                  failedJobs,
+                  '',
+                  subPrUrl ? `**Fix sub-PR:** ${subPrUrl}` : '',
+                  '',
+                  '---',
+                  `*Auto-created by CI workflow. Close this issue once the failures are resolved.*`,
+                ].join('\n');
+                try {
+                  const { data: newIssue } = await github.rest.issues.create({
+                    owner, repo,
+                    title: issueTitle,
+                    body: issueBody,
+                    labels: ['ci-failure'],
+                    assignees: [prAuthor],
+                  });
+                  core.info(`Tracking issue created: ${newIssue.html_url}`);
+                } catch (issueErr) {
+                  core.warning(`Could not create tracking issue: ${issueErr.message}`);
+                }
+              } else {
+                core.info(`Tracking issue already exists: ${duplicate.html_url}`);
+              }
+
               await github.rest.issues.createComment({
                 owner, repo, issue_number: prNumber,
                 body: [

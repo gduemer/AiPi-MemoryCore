@@ -12,6 +12,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 env:
   MIN_APPROVALS: "2"
@@ -107,3 +108,48 @@ jobs:
             });
 
             core.info('AI verification loop comment posted.');
+
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner    = context.repo.owner;
+            const repo     = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+            const prTitle  = context.payload.pull_request.title;
+            const prBranch = context.payload.pull_request.head.ref;
+            const prAuthor = context.payload.pull_request.user.login;
+
+            const issueTitle = `[AI Review Failure] PR #${prNumber} — ${prTitle}`;
+            const { data: existingIssues } = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open',
+            });
+            const duplicate = existingIssues.find(i => i.title === issueTitle && !i.pull_request);
+            if (!duplicate) {
+              const issueBody = [
+                `## AI Review Loop Failure on PR #${prNumber}`,
+                '',
+                `**PR:** [${prTitle}](https://github.com/${owner}/${repo}/pull/${prNumber})`,
+                `**Branch:** \`${prBranch}\``,
+                `**Workflow run:** https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+                '',
+                'The AI Review Loop workflow encountered a failure. Check the workflow run logs for details.',
+                '',
+                '---',
+                `*Auto-created by AI Review Loop workflow. Close this issue once the failures are resolved.*`,
+              ].join('\n');
+              try {
+                const { data: newIssue } = await github.rest.issues.create({
+                  owner, repo,
+                  title: issueTitle,
+                  body: issueBody,
+                  assignees: [prAuthor],
+                });
+                core.info(`Tracking issue created: ${newIssue.html_url}`);
+              } catch (issueErr) {
+                core.warning(`Could not create tracking issue: ${issueErr.message}`);
+              }
+            } else {
+              core.info(`Tracking issue already exists: ${duplicate.html_url}`);
+            }

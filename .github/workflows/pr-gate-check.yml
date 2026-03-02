@@ -77,6 +77,44 @@ jobs:
                 subPrUrl = openPRs[0].html_url;
               }
 
+              // ── Open a tracking Issue (deduplicated by title) ────────────
+              const issueTitle = `[Gate Failure] PR #${prNumber} — ${prTitle}`;
+              const { data: existingIssues } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner, repo: context.repo.repo,
+                state: 'open',
+              });
+              const duplicate = existingIssues.find(i => i.title === issueTitle && !i.pull_request);
+              if (!duplicate) {
+                const issueBody = [
+                  `## PR Gate Check Failure on PR #${prNumber}`,
+                  '',
+                  `**PR:** [${prTitle}](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${prNumber})`,
+                  `**Branch:** \`${prBranch}\``,
+                  `**Workflow run:** https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                  '',
+                  '### Missing required sections',
+                  failing.map(f => `- **${f.name}**`).join('\n'),
+                  '',
+                  subPrUrl ? `**Fix sub-PR:** ${subPrUrl}` : '',
+                  '',
+                  '---',
+                  `*Auto-created by PR Gate Check workflow. Close this issue once the PR description is updated.*`,
+                ].join('\n');
+                try {
+                  const { data: newIssue } = await github.rest.issues.create({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    title: issueTitle,
+                    body: issueBody,
+                    assignees: [prAuthor],
+                  });
+                  core.info(`Tracking issue created: ${newIssue.html_url}`);
+                } catch (issueErr) {
+                  core.warning(`Could not create tracking issue: ${issueErr.message}`);
+                }
+              } else {
+                core.info(`Tracking issue already exists: ${duplicate.html_url}`);
+              }
+
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo:  context.repo.repo,
