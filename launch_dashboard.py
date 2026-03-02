@@ -29,6 +29,7 @@ def get_screen_size():
     """Get screen dimensions (Windows)."""
     try:
         import ctypes
+
         user32 = ctypes.windll.user32
         return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
     except Exception:
@@ -106,14 +107,12 @@ def launch_server():
 
 
 def main():
-    print(
-        """
+    print("""
 ╭────────────────────────────────────────────────────────────╮
 │  AiPi-MemoryCore Dashboard Launcher                        │
 │  Phase 1-5 memory architecture                             │
 ╰────────────────────────────────────────────────────────────╯
-"""
-    )
+""")
 
     server = None
     try:

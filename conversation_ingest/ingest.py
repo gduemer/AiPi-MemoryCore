@@ -3,6 +3,7 @@ Phase 1: Conversation Ingest
 Parses exported ChatGPT/Claude/Perplexity conversation JSON.
 Extracts: decisions, promises, deadlines, projects, emotions, tech, open loops.
 """
+
 import json
 import uuid
 from pathlib import Path
