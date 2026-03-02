@@ -85,7 +85,7 @@ def launch_server():
     repo_root = Path(__file__).parent
     os.chdir(repo_root)
 
-    # Start uvicorn
+    # Start uvicorn (inherit stdout/stderr so pipe buffers can't block uvicorn)
     server = subprocess.Popen(
         [
             sys.executable,
@@ -98,9 +98,6 @@ def launch_server():
             str(PORT),
             "--reload",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
     )
 
     # Wait for server to be ready
@@ -118,6 +115,7 @@ def main():
 ╰────────────────────────────────────────────────────────────╯
     """)
 
+    server = None
     try:
         # Launch FastAPI server
         server = launch_server()
@@ -134,8 +132,9 @@ def main():
 
     except KeyboardInterrupt:
         print("\n\n🛑 Shutting down server...")
-        server.terminate()
-        server.wait()
+        if server is not None:
+            server.terminate()
+            server.wait()
         print("✅ Server stopped.")
     except Exception as e:
         print(f"\n❌ Error: {e}")

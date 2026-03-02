@@ -244,25 +244,33 @@ async def root():
 @app.post("/upload")
 async def upload_conversation(file: UploadFile = File(...)):
     """Upload and ingest conversation JSON file."""
+    import tempfile
+
     try:
         # Read file content
         content = await file.read()
         data = json.loads(content)
 
-        # Save to temp file
-        temp_path = f"/tmp/{file.filename}"
-        with open(temp_path, "w") as f:
-            json.dump(data, f)
+        # Save to a secure temp file (avoids path traversal from client filename)
+        fd, temp_path = tempfile.mkstemp(suffix=".json")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
 
-        # Run ingestion
-        result = subprocess.run(
-            ["python", "conversation_ingest/ingest.py", temp_path],
-            capture_output=True,
-            text=True,
-        )
-
-        # Clean up
-        os.remove(temp_path)
+            # Run ingestion with the same interpreter/venv as this app
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ingest_script = os.path.join(
+                project_root, "conversation_ingest", "ingest.py"
+            )
+            result = subprocess.run(
+                [sys.executable, ingest_script, temp_path],
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            # Always remove the temp file even if ingestion raises
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
         if result.returncode == 0:
             return {"status": "success", "message": f"Ingested {file.filename}"}
