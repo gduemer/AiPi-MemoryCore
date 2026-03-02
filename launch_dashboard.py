@@ -58,29 +58,23 @@ def open_centered_browser():
     for chrome_path in chrome_paths:
         if Path(chrome_path).exists():
             try:
-                subprocess.Popen(
-                    [
-                        chrome_path,
-                        f"--app={URL}",
-                        f"--window-size={WINDOW_WIDTH},{WINDOW_HEIGHT}",
-                        f"--window-position={x},{y}",
-                        "--new-window",
-                    ]
-                )
-                print(f"✅ Opened Chrome app window at ({x}, {y})")
-                return
+                subprocess.Popen([
+                    chrome_path,
+                    f"--app={URL}",
+                    f"--window-size={WINDOW_WIDTH},{WINDOW_HEIGHT}",
+                    f"--window-position={x},{y}",
+                    "--new-window",
+                ])
+                    print(f"Opened Chrome app window at ({x}, {y})")                return
             except Exception as e:
-                print(f"⚠️  Chrome app mode failed: {e}")
-
+                    print(f"Chrome app mode failed: {e}")    
     # Fallback: default browser (won't be centered)
-    print("⚠️  Chrome not found, opening default browser...")
-    webbrowser.open(URL)
+    print("Chrome not found, opening default browser...")    webbrowser.open(URL)
 
 
 def launch_server():
     """Start uvicorn server in background."""
-    print(f"🚀 Starting AiPi-MemoryCore dashboard server on {HOST}:{PORT}...")
-
+    print(f"🚀 Starting AiPi-MemoryCore dashboard server on {HOST}:{PORT}...")   
     # Change to repo root
     repo_root = Path(__file__).parent
     os.chdir(repo_root)
