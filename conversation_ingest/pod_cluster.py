@@ -2,12 +2,14 @@
 conversation_ingest/pod_cluster.py
 Phase 2: Pod Segmentation via sentence-transformers + HDBSCAN
 """
+
 import json
 import uuid
 import numpy as np
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 import hdbscan
+
 EXTRACTED_DIR = Path("conversation_ingest/extracted_json")
 EMBED_DIR = Path("conversation_ingest/embeddings")
 EMBED_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,6 +44,8 @@ def generate_embeddings(records: list[dict]) -> np.ndarray:
     np.save(EMBED_DIR / "embeddings.npy", embeddings)
     print("[cluster] Embeddings saved.")
     return embeddings
+
+
 def cluster_embeddings(embeddings: np.ndarray, records: list[dict]) -> list[dict]:
     clusterer = hdbscan.HDBSCAN(min_cluster_size=3, min_samples=2, metric="euclidean")
     labels = clusterer.fit_predict(embeddings)
