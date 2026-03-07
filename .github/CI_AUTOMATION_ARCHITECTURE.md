@@ -1,13 +1,59 @@
-# CI/CD Automation Architecture - OOP Design
+# CI/CD Automation Architecture - Progressive Fix Strategy
 
 ## 🏗️ System Overview
 
 Production-grade, self-healing CI/CD system with:
+- **Progressive Strategy**: Three-tier fix approach (quick → deep → owner input)
+- **In-Place Fixes**: No recursive PRs - all fixes within the same PR
 - **Modularity**: Reusable workflow components
 - **Observability**: Metrics tracking & analytics
 - **Intelligence**: Strategy pattern for fix attempts
-- **Automation**: Auto-merge on success
-- **Resilience**: Recursive depth limiting
+- **Resilience**: Depth limiting with owner notification
+
+## 🎯 Progressive Fix Strategy
+
+When CI fails on a PR, the auto-fix workflow applies a **three-tier progressive strategy**:
+
+### 1️⃣ **Quick Fix (Attempt 1/3)**
+- **Strategy**: Safe, standard auto-formatting
+- **Tools**:
+  - `black .` (standard formatting)
+  - `ruff check . --fix` (safe fixes only)
+- **Goal**: Fix simple formatting and linting issues quickly
+- **If successful**: Commits fixes and triggers CI re-run
+- **If fails**: Increments depth marker and waits for next CI failure
+
+### 2️⃣ **Deep Fix (Attempt 2/3)**
+- **Strategy**: Aggressive transformations with unsafe fixes
+- **Tools**:
+  - `black . --verbose` (detailed formatting)
+  - `ruff check . --fix --unsafe-fixes --show-fixes` (aggressive fixes)
+- **Goal**: Apply more aggressive automated fixes
+- **If successful**: Commits fixes and triggers CI re-run
+- **If fails**: Increments depth marker and waits for next CI failure
+
+### 3️⃣ **Request Owner Input (Attempt 3/3)**
+- **Strategy**: Create issue and notify owner
+- **Actions**:
+  - Creates GitHub issue with `manual-fix-required` label
+  - Comments on PR with detailed explanation
+  - Lists all attempted strategies
+  - Provides CI logs link
+- **Goal**: Escalate to human intervention
+- **Result**: Owner must manually fix the issues
+
+## 🔑 Key Design Principles
+
+### ✅ **No Recursive PRs**
+- All fix attempts happen **within the same PR**
+- No sub-PRs or nested branches created
+- Depth tracking via commit message markers: `[auto-fix-depth-N]`
+
+### 🔄 **Self-Conversation Loop**
+- Workflow communicates progress via PR comments
+- Each attempt posts a status update
+- Failed attempts explain what was tried and what's next
+- Transparent process for developers
 
 ## 📁 Project Structure
 
@@ -94,25 +140,57 @@ def try_fix_chain(strategies: List[FixStrategy]):
 
 ```mermaid
 graph TD
-    A[CI Fails] --> B{ci-auto-healer.yml}
-    B --> C[Get PR Details]
-    C --> D[Check Depth]
-    D --> E{Depth < 3?}
-    E -->|No| F[Create Issue]
-    E -->|Yes| G[Call _reusable-fix-strategy.yml]
-    G --> H[Factory Selects Strategy]
-    H --> I[Apply Fix]
-    I --> J[Call _reusable-test-validation.yml]
-    J --> K{Tests Pass?}
-    K -->|No| L{Depth+1 < 3?}
-    K -->|Yes| M[Commit Fixes]
-    M --> N[Track Metrics]
-    N --> O[Call _reusable-auto-merge.yml]
-    O --> P{All Checks Pass?}
-    P -->|Yes| Q[Auto-Merge]
-    P -->|No| R[Wait for Manual]
-    L -->|Yes| S[Create Sub-PR]
-    L -->|No| F
+    A[CI Fails on PR] --> B[Auto-Fix Workflow Triggered]
+    B --> C[Get PR Details & Check Depth]
+    C --> D{Current Depth?}
+
+    D -->|Depth 0| E[Strategy: Quick Fix]
+    D -->|Depth 1| F[Strategy: Deep Fix]
+    D -->|Depth 2+| G[Strategy: Request Owner Input]
+
+    E --> H[Run safe black/ruff fixes]
+    F --> I[Run aggressive ruff --unsafe-fixes]
+    G --> J[Create Issue & Comment on PR]
+
+    H --> K{Fixes Applied?}
+    I --> K
+
+    K -->|Yes| L[Commit & Push to Same PR]
+    K -->|No| M[Increment Depth Marker]
+
+    L --> N[CI Re-runs]
+    M --> O[Add Depth Commit]
+    O --> P[Comment: Next Strategy]
+    P --> N
+
+    N --> Q{CI Passes?}
+    Q -->|Yes| R[Success! PR Ready]
+    Q -->|No| S{Depth < 2?}
+    S -->|Yes| B
+    S -->|No| G
+
+    J --> T[Owner Fixes Manually]
+    T --> R
+```
+
+## 📊 Depth Tracking Mechanism
+
+The workflow tracks attempt depth using **commit message markers**:
+
+1. **Initial attempt** (Depth 0): No marker in commits
+2. **After first failure**: Adds commit with `[auto-fix-depth-1]` marker
+3. **After second failure**: Adds commit with `[auto-fix-depth-2]` marker
+4. **Depth detection**: Scans last 10 commits for most recent `[auto-fix-depth-N]` marker
+
+### Example Commit History
+```
+abc123 - feat: add new feature
+def456 - fix(auto): apply ruff fixes using quick_fix strategy [attempt: 1/3]
+ghi789 - chore(auto-fix): increment depth to 1 for next attempt
+         [auto-fix-depth-1]
+jkl012 - fix(auto): apply ruff fixes using deep_fix strategy [attempt: 2/3]
+mno345 - chore(auto-fix): increment depth to 2 for next attempt
+         [auto-fix-depth-2]
 ```
 
 ## 📊 Metrics Schema
@@ -191,30 +269,29 @@ CREATE TABLE strategy_performance (
 
 ## 🎓 Benefits Over Previous Version
 
-### ✅ Modular
-- Each workflow has single responsibility
-- Easy to test/update individually
-- Reusable across repos
+### ✅ No Recursive PRs
+- **Before**: Created sub-PRs for each fix attempt, leading to PR sprawl
+- **After**: All fixes happen in the same PR, keeping the workflow clean
 
-### ✅ Observable
-- Tracks all fix attempts
-- Stores metrics in SQLite
-- Generates performance reports
+### ✅ Progressive Intelligence
+- **Before**: Single fix strategy (unsafe fixes always)
+- **After**: Three-tier approach - start simple, get aggressive, then escalate
 
-### ✅ Intelligent
-- Strategy pattern allows easy addition of new fixers
-- Learns which strategies work best
-- Can prioritize based on success rate
+### ✅ Clear Communication
+- **Before**: Silent failures or confusing sub-PR chains
+- **After**: PR comments explain each attempt and next steps
 
-### ✅ Complete Loop
-- Auto-merge on success
-- Closes related issues
-- Updates parent PRs
+### ✅ Owner Engagement
+- **Before**: Could create infinite sub-PRs
+- **After**: Explicitly requests owner input after 2 automated attempts
 
-### ✅ Test-Safe
-- Always validates fixes work
-- Never pushes breaking changes
-- Runs full test suite
+### ✅ Transparent Process
+- **Before**: Hard to track what was tried
+- **After**: Commit messages and comments document every attempt
+
+### ✅ Self-Contained
+- **Before**: Required tracking across multiple PRs
+- **After**: Single PR contains entire fix history
 
 ## 📈 Analytics Dashboard (Future)
 
@@ -249,5 +326,22 @@ python .github/scripts/generate_report.py --week
 
 ---
 
-**Status**: 🟡 Design Complete - Implementation Pending
-**Next Step**: Create reusable workflow components
+**Status**: 🟢 **Implemented** - Progressive fix strategy active
+**Current Version**: `auto-fix-ci-failures.yml` with three-tier progressive strategy
+**Next Steps**: Monitor effectiveness and adjust strategies as needed
+
+## 📝 Implementation Notes
+
+### What Changed (2026-03-07)
+1. ✅ Removed recursive PR creation logic
+2. ✅ Implemented three-tier progressive fix strategy
+3. ✅ Added depth tracking via commit message markers
+4. ✅ Added PR comments for transparency
+5. ✅ Updated max attempts from 3 to 2 (plus owner notification)
+6. ✅ All fixes now happen within the same PR
+
+### Migration Notes
+- **Old behavior**: Created sub-PRs for each fix attempt
+- **New behavior**: In-place fixes with progressive strategies
+- **Breaking change**: No sub-PRs means simpler PR graph but different tracking
+- **Backward compatible**: Existing PRs will use new strategy on next CI failure

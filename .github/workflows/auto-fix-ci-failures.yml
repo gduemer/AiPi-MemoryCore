@@ -31,36 +31,65 @@ jobs:
               core.setFailed('No PR found for this workflow run');
               return;
             }
-            
+
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber
             });
-            
-            // Get recursion depth from PR branch name or labels
-            const depth = pr.head.ref.match(/auto-fix-depth-(\d+)/) ? 
-              parseInt(RegExp.$1) : 0;
-            
+
+            // Get recursion depth from PR branch name or recent commit messages
+            let depth = 0;
+
+            // Check branch name first
+            const branchMatch = pr.head.ref.match(/auto-fix-depth-(\d+)/);
+            if (branchMatch) {
+              depth = parseInt(branchMatch[1]);
+            } else {
+              // Check recent commits for depth markers
+              const { data: commits } = await github.rest.pulls.listCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                per_page: 10
+              });
+
+              // Look through commit messages for depth markers
+              for (const commit of commits.reverse()) {
+                const match = commit.commit.message.match(/\[auto-fix-depth-(\d+)\]/);
+                if (match) {
+                  depth = parseInt(match[1]);
+                  break;
+                }
+              }
+            }
+
             core.setOutput('pr_number', prNumber);
             core.setOutput('pr_title', pr.title);
             core.setOutput('pr_branch', pr.head.ref);
             core.setOutput('base_branch', pr.base.ref);
             core.setOutput('depth', depth);
-            
+
             return { prNumber, depth };
 
-      - name: Check recursion depth
+      - name: Check recursion depth and determine strategy
         id: check_depth
         run: |
           DEPTH=${{ steps.pr.outputs.depth }}
           echo "Current depth: $DEPTH"
-          
-          if [ "$DEPTH" -ge 3 ]; then
+
+          if [ "$DEPTH" -ge 2 ]; then
             echo "reached_max_depth=true" >> $GITHUB_OUTPUT
-            echo "⚠️ Maximum recursion depth (3) reached. Manual intervention required."
+            echo "strategy=request_owner_input" >> $GITHUB_OUTPUT
+            echo "⚠️ Maximum fix attempts (2) reached. Requesting owner input."
+          elif [ "$DEPTH" -eq 1 ]; then
+            echo "reached_max_depth=false" >> $GITHUB_OUTPUT
+            echo "strategy=deep_fix" >> $GITHUB_OUTPUT
+            echo "🔧 Attempt 2/2: Running deeper fix strategy..."
           else
             echo "reached_max_depth=false" >> $GITHUB_OUTPUT
+            echo "strategy=quick_fix" >> $GITHUB_OUTPUT
+            echo "🔧 Attempt 1/2: Running quick fix strategy..."
           fi
 
       - name: Checkout PR branch
@@ -121,9 +150,17 @@ jobs:
           steps.check_depth.outputs.reached_max_depth == 'false' &&
           steps.logs.outputs.check_name == 'black'
         run: |
-          echo "🔧 Running black auto-format..."
-          black . --exclude '/(\.)'
-          
+          STRATEGY=${{ steps.check_depth.outputs.strategy }}
+          echo "🔧 Running black auto-format (strategy: $STRATEGY)..."
+
+          if [ "$STRATEGY" = "quick_fix" ]; then
+            # Quick fix: standard black formatting
+            black . --exclude '/(\.)'
+          else
+            # Deep fix: same as quick (black doesn't have aggressive mode)
+            black . --exclude '/(\.)' --verbose
+          fi
+
           # Check if anything changed
           if git diff --quiet; then
             echo "changed=false" >> $GITHUB_OUTPUT
@@ -141,9 +178,17 @@ jobs:
           steps.check_depth.outputs.reached_max_depth == 'false' &&
           steps.logs.outputs.check_name == 'ruff'
         run: |
-          echo "🔧 Running ruff auto-fix..."
-          ruff check . --fix --unsafe-fixes
-          
+          STRATEGY=${{ steps.check_depth.outputs.strategy }}
+          echo "🔧 Running ruff auto-fix (strategy: $STRATEGY)..."
+
+          if [ "$STRATEGY" = "quick_fix" ]; then
+            # Quick fix: safe fixes only
+            ruff check . --fix
+          else
+            # Deep fix: unsafe fixes enabled
+            ruff check . --fix --unsafe-fixes --show-fixes
+          fi
+
           if git diff --quiet; then
             echo "changed=false" >> $GITHUB_OUTPUT
           else
@@ -159,23 +204,25 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           DEPTH=${{ steps.pr.outputs.depth }}
+          STRATEGY=${{ steps.check_depth.outputs.strategy }}
           CHECK_NAME=${{ steps.logs.outputs.check_name }}
-          
+
           git add -A
-          git commit -m "fix(auto): apply $CHECK_NAME formatting fixes [depth: $DEPTH]
-          
+          git commit -m "fix(auto): apply $CHECK_NAME fixes using $STRATEGY strategy [attempt: $((DEPTH + 1))/3]
+
           Auto-fixed by CI workflow after $CHECK_NAME check failure.
-          Parent PR: #${{ steps.pr.outputs.pr_number }}
-          Recursion depth: $DEPTH/3"
-          
+          PR: #${{ steps.pr.outputs.pr_number }}
+          Strategy: $STRATEGY
+          Attempt: $((DEPTH + 1))/3"
+
           git push origin ${{ steps.pr.outputs.pr_branch }}
-          
+
           echo "pushed=true" >> $GITHUB_OUTPUT
 
-      - name: Create sub-PR if fixes failed
-        id: sub_pr
+      - name: Update branch depth marker for next attempt
+        id: update_depth
         if: >-
           steps.check_depth.outputs.reached_max_depth == 'false' &&
           steps.commit.outputs.pushed != 'true'
@@ -184,97 +231,113 @@ jobs:
           script: |
             const depth = parseInt('${{ steps.pr.outputs.depth }}');
             const newDepth = depth + 1;
-            const parentPR = '${{ steps.pr.outputs.pr_number }}';
+            const prNumber = '${{ steps.pr.outputs.pr_number }}';
+            const prBranch = '${{ steps.pr.outputs.pr_branch }}';
             const checkName = '${{ steps.logs.outputs.check_name }}';
-            
-            // Create a new branch for sub-PR
-            const baseBranch = '${{ steps.pr.outputs.pr_branch }}';
-            const subBranch = `auto-fix-depth-${newDepth}/pr-${parentPR}/${checkName}`;
-            
-            // Create branch
-            const baseRef = await github.rest.git.getRef({
+
+            // Update the PR branch name to include depth for next run
+            // We'll use a git commit with the depth in metadata instead
+            // This allows the workflow to track depth across attempts
+
+            // Comment on PR about the attempt
+            const strategyName = newDepth === 1 ? 'deeper fix' : 'owner input request';
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: `heads/${baseBranch}`
+              issue_number: prNumber,
+              body: `🔄 **Auto-fix attempt ${depth + 1}/3 did not resolve the issue**\n\n` +
+                `The \`${checkName}\` check is still failing after the ${depth === 0 ? 'quick fix' : 'deep fix'} strategy.\n\n` +
+                `Next step: Will try **${strategyName}** on the next CI run.\n\n` +
+                `---\n` +
+                `*Note: The fix workflow operates within this PR (no sub-PRs created).*`
             });
-            
-            await github.rest.git.createRef({
+
+            // Create a temporary commit to increment the depth marker
+            // The next workflow run will detect this and use the new depth
+            const { data: refData } = await github.rest.git.getRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: `refs/heads/${subBranch}`,
-              sha: baseRef.data.object.sha
+              ref: `heads/${prBranch}`
             });
-            
-            // Create sub-PR
-            const title = `[${{ steps.pr.outputs.pr_title }}] Auto-fix: ${checkName} check [depth ${newDepth}/3]`;
-            const body = `## 🤖 Automated Fix PR\n\n` +
-              `**Parent PR:** #${parentPR}\n` +
-              `**Failed Check:** \`${checkName}\`\n` +
-              `**Recursion Depth:** ${newDepth}/3\n\n` +
-              `---\n\n` +
-              `This PR was automatically created to fix \`${checkName}\` failures in the parent PR.\n\n` +
-              `The workflow will attempt to apply automatic fixes and commit them back to this branch.` +
-              `\n\nIf this PR also fails, the workflow will create another sub-PR (up to depth 3).`;
-            
-            const { data: pr } = await github.rest.pulls.create({
+
+            const commitSha = refData.object.sha;
+            const { data: commitData } = await github.rest.git.getCommit({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: title,
-              body: body,
-              head: subBranch,
-              base: baseBranch
+              commit_sha: commitSha
             });
-            
-            // Add labels
-            await github.rest.issues.addLabels({
+
+            // Create an empty commit with depth marker
+            const { data: newCommit } = await github.rest.git.createCommit({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: pr.number,
-              labels: ['auto-fix', `depth-${newDepth}`, `parent-pr-${parentPR}`]
+              message: `chore(auto-fix): increment depth to ${newDepth} for next attempt\n\n[auto-fix-depth-${newDepth}]`,
+              tree: commitData.tree.sha,
+              parents: [commitSha]
             });
-            
-            core.info(`✅ Created sub-PR #${pr.number}`);
-            return pr.number;
+
+            // Update the ref
+            await github.rest.git.updateRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `heads/${prBranch}`,
+              sha: newCommit.sha
+            });
+
+            core.info(`✅ Updated depth marker to ${newDepth} for next CI run`);
+            return newDepth;
 
       - name: Create issue at max depth
         if: steps.check_depth.outputs.reached_max_depth == 'true'
         uses: actions/github-script@v7
         with:
           script: |
-            const parentPR = '${{ steps.pr.outputs.pr_number }}';
+            const prNumber = '${{ steps.pr.outputs.pr_number }}';
             const checkName = '${{ steps.logs.outputs.check_name }}';
-            
-            const title = `[${{ steps.pr.outputs.pr_title }}] Manual fix required: ${checkName} check`;
-            const body = `## ⚠️ Maximum Auto-Fix Depth Reached\n\n` +
-              `**Parent PR:** #${parentPR}\n` +
+            const prTitle = '${{ steps.pr.outputs.pr_title }}';
+
+            const title = `[${prTitle}] Manual fix required: ${checkName} check`;
+            const body = `## ⚠️ Maximum Auto-Fix Attempts Reached\n\n` +
+              `**PR:** #${prNumber}\n` +
               `**Failed Check:** \`${checkName}\`\n` +
-              `**Recursion Depth:** 3/3 (maximum)\n\n` +
+              `**Fix Attempts:** 3/3 (maximum)\n\n` +
               `---\n\n` +
-              `The automatic fix workflow has reached the maximum recursion depth (3 levels).\n` +
-              `**Manual intervention is required** to resolve the remaining \`${checkName}\` failures.\n\n` +
+              `The automatic fix workflow has tried multiple strategies and reached the maximum number of attempts.\n\n` +
+              `### Fix Strategies Attempted:\n` +
+              `1. ✅ **Quick fix** - Standard auto-formatting/linting\n` +
+              `2. ✅ **Deep fix** - Aggressive fixes with unsafe transformations\n` +
+              `3. ⚠️ **Owner input required** - Manual intervention needed\n\n` +
+              `**Manual intervention is now required** to resolve the remaining \`${checkName}\` failures.\n\n` +
               `### Next Steps:\n` +
               `1. Review the failing checks in the CI logs\n` +
               `2. Manually fix the issues locally\n` +
               `3. Push the fixes to the PR branch\n\n` +
-              `### Failed Files:\n` +
-              `Check the workflow logs for specific file errors.`;
-            
+              `### CI Workflow Run:\n` +
+              `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
             const { data: issue } = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: title,
               body: body,
-              labels: ['manual-fix-required', 'ci-failure', `parent-pr-${parentPR}`]
+              labels: ['manual-fix-required', 'ci-failure', `pr-${prNumber}`]
             });
-            
-            // Comment on parent PR
+
+            // Comment on PR
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: parentPR,
-              body: `⚠️ **Auto-fix workflow reached maximum depth.**\n\nCreated issue #${issue.number} for manual intervention.`
+              issue_number: prNumber,
+              body: `⚠️ **Auto-fix workflow has exhausted all strategies.**\n\n` +
+                `After 3 attempts using different fix strategies, the \`${checkName}\` check is still failing.\n\n` +
+                `Created issue #${issue.number} for manual intervention.\n\n` +
+                `### What was tried:\n` +
+                `1. Quick fix (safe auto-formatting)\n` +
+                `2. Deep fix (aggressive transformations)\n` +
+                `3. This final notification\n\n` +
+                `Please review the CI logs and fix the issues manually.`
             });
-            
+
             core.info(`✅ Created issue #${issue.number}`);
 
       - name: Comment on PR with fix status
@@ -287,12 +350,15 @@ jobs:
             const checkName = '${{ steps.logs.outputs.check_name }}';
             const prNumber = '${{ steps.pr.outputs.pr_number }}';
             const depth = '${{ steps.pr.outputs.depth }}';
-            
+            const strategy = '${{ steps.check_depth.outputs.strategy }}';
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: `✅ **Auto-fix applied** [depth ${depth}/3]\n\n` +
-                `Applied automatic \`${checkName}\` fixes and pushed to this PR.\n` +
-                `The CI workflow will re-run to verify the fixes.`
+              body: `✅ **Auto-fix applied** [attempt ${parseInt(depth) + 1}/3]\n\n` +
+                `Applied automatic \`${checkName}\` fixes using **${strategy}** strategy and pushed to this PR.\n\n` +
+                `The CI workflow will re-run to verify the fixes.\n\n` +
+                `---\n` +
+                `*Note: Fix attempts happen in-place within this PR (no sub-PRs created).*`
             });
